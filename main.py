@@ -371,4 +371,22 @@ def prepare_data(df_train_data: pd.DataFrame) -> pd.DataFrame:
     #machine_age at sale (how old the machine is when sold)
     df_train_data["MachineAge"] = df_train_data["SaleYear"] - df_train_data["YearMade"]
 
+    #StateSalesLevel Group states into High / Medium / Low based on number of sales records
+    state_counts = df_train_data["state"].value_counts() #Count how many sales exist in each state
+    high_threshold = state_counts.quantile(0.75)  # 75 percentile top 25% states by sales
+    low_threshold = state_counts.quantile(0.25)  # 25 percentile bottom 25% states by sales
+    #print(high_threshold)
+    #print(low_threshold)
+    def map_state_sales(state): #mapping each state into high medium amd low category
+        count = state_counts[state]
+        if count >= high_threshold:
+            return "High"
+        elif count <= low_threshold:
+            return "Low"
+        else:
+            return "Medium"
+
+    df_train_data["StateSalesLevel"] = df_train_data["state"].apply(map_state_sales)
+
+
     return df_train_data
