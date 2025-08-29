@@ -146,6 +146,76 @@ unsupervised learning (we have no target, search for patterns) which data is 'no
 when a low number of checks in the tree to get to the value then abnormal else normal
 
 
+Aviad: Train vs Validation data
+Here are some techniques, some simple and some more advanced to compare the validation dataset with the training dataset. Are they dissimilar in some ways? 
+---
+
+EDA checks (fast + effective)
+
+Compare summary stats
+Look for: big gaps in mean/median/std between train vs valid.
+Helps: catches obvious distribution shift that can bias your model.
+
+Two-sample tests
+Look for: small p-values from KS (numeric) or Chi-square (categorical).
+Helps: tells you if the difference is statistically significant, not just visual.
+
+Distribution plots
+Look for: misaligned histograms/KDEs, outliers only in one split.
+Helps: visual confirmation of drift, easier to explain to others.
+
+Missingness and cardinality drift
+Look for: higher null rate in one set, new categories appearing only in valid.
+Helps: null handling and unseen categories are classic sources of test failure.
+
+Correlation / covariance drift
+Look for: feature relationships changing (e.g. X and Y correlated in train, uncorrelated in valid).
+Helps: signals that your model may rely on unstable patterns.
+
+---
+Adversarial validation
+
+Train a classifier to predict “is_train” vs “is_valid”.
+Look for: high ROC-AUC (>0.7 means the sets are distinguishable).
+Helps: if a model can separate them, your real model will also exploit those differences and fail to generalize.
+Bonus: check feature importances/SHAP — they tell you which features drift most.
+
+---
+Drift indices & divergences (advanced)
+
+Population Stability Index (PSI)
+Look for: PSI > 0.2 on a feature = meaningful drift.
+Helps: used in production (especially finance) to monitor input stability.
+
+Jensen–Shannon / KL / Wasserstein distances
+Look for: large divergence values.
+Helps: quantifies how far distributions have moved, even if visually subtle.
+
+Maximum Mean Discrepancy (MMD)
+Look for: large test statistic rejecting null hypothesis of same distribution.
+Helps: sensitive to high-dimensional drift beyond single features.
+
+---
+Structure / geometry diagnostics (advanced)
+
+Dimensionality reduction (PCA/UMAP/t-SNE)
+Look for: train and valid points clustering apart when colored by split.
+Helps: shows multivariate drift visually, not just per-feature.
+
+Density ratio estimation (logistic or k-NN)
+Look for: sample weights far from 1.
+Helps: tells you which regions of feature space are under- or over-represented in validation.
+---
+Target & leakage checks
+Target distribution
+Look for: different label balance or mean/variance of target.
+Helps: target drift is expected in temporal splits, but you need to know about it.
+
+Leakage probes
+Look for: features highly predictive of split or target only in one set.
+Helps: prevents training on information that won’t exist in real deployment.
+
+Pipelines helps preventing data leakage: do this for train, test and validation datasets
 """
 
 import pandas as pd
@@ -163,8 +233,12 @@ from typing import Tuple  # for python Tuple type annotations
 from sklearn.impute import SimpleImputer
 import plotly.graph_objects as go
 import plotly.io as pio
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from category_encoders.target_encoder import TargetEncoder
 
 pio.renderers.default = "browser"
+
 
 
 # RMSE function
@@ -191,123 +265,9 @@ def category_cat_code(X: pd.DataFrame) -> pd.DataFrame:
             X[col] = X[col].cat.codes
     return X
 
+def dummies(df: pd.DataFrame) -> pd.DataFrame:
+    return pd.get_dummies(df)
 
-# split the data into train and test
-def split_data(df: pd.DataFrame, y_name: str, cat_ind: int, t_size: float, rand_state: int) -> Tuple[
-    pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    X = df.drop(columns=[y_name])
-    y = df[y_name]
-
-    # Feature Engineering: call category_cat_code(X) function to take care of object and category variables
-    if cat_ind > 0:
-        X = category_cat_code(X)
-        print('print X.head() after object-category cat code')
-        print(X.head())
-    # split to train and test data sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=t_size, random_state=rand_state)
-    return X_train, X_test, y_train, y_test
-
-
-# permutation importance function
-def perm_importance_df(rf, xs, perm_n_repeat: int) -> pd.DataFrame:
-    X_train, X_test, y_train, y_test = xs
-    # Compute Permutation Importance
-    perm_importance = permutation_importance(rf, X_test, y_test, n_repeats=perm_n_repeat, random_state=42, n_jobs=-1)
-    # Display the results
-    print('Feature Importance Results on Test Model Data:')
-    importance_df = pd.DataFrame({
-        "Feature": rf.feature_names_in_,
-        "Permutation Importance": perm_importance.importances_mean,
-        "Permutation Std Deviation": perm_importance.importances_std,
-        'model importance': rf.feature_importances_
-    }).sort_values(by="Permutation Importance", ascending=False)
-    display(importance_df)
-    return importance_df
-
-
-# def run_rf(df: pd.DataFrame, y_name: str, rfr_m_samp: float, rfr_msl:int ,t_size: float, rand_state: int)-> None:
-#    model = RandomForestRegressor(max_samples=rfr_m_samp, min_samples_leaf=rfr_msl)
-def run_rf(df: pd.DataFrame, spl_y_name: str, cat_ind: int, spl_t_size: float,
-           spl_rand_state: int) -> None:  # Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    # cat codes and object to category
-    # split data
-    X_train, X_test, y_train, y_test = split_data(df, spl_y_name, cat_ind, spl_t_size, spl_rand_state)
-    # train model
-    rf.fit(X_train, y_train)
-    y_train_pred = rf.predict(X_train)
-    # test model
-    y_test_pred = rf.predict(X_test)
-    # print rmse results
-    print(f" RMSE Train: {rmse(y_train, y_train_pred)}")
-    print(f" RMSE Test: {rmse(y_test, y_test_pred)}")
-    # Feature Importance
-    # perm_importance_df(rf, (X_train, X_test, y_train, y_test))
-    perm_importance_df(rf, (X_train, X_test, y_train, y_test), 5)
-    # return X_train, X_test, y_train, y_test
-
-
-# set category columns as codes
-def set_cat_as_code(df: pd.DataFrame) -> pd.DataFrame:
-    for col in df.select_dtypes('category').columns:
-        df[col] = df[col].cat.codes
-    return df
-
-
-def get_df_properties(df: pd.DataFrame) -> None:
-    print('---------- head(5) ----------')
-    print(df.head(5))
-    print('---------- info() ----------')
-    print(df.info())
-    print('---------- describe() ----------')
-    print(df.describe())
-    print('---------- shape ----------')
-    print(df.shape)
-    print('---------- nunique() ----------')
-    print(df.nunique())
-    print('---------- df.isna().sum() ----------')
-    print(df.isna().sum())
-
-
-# load data:
-df_train_data = pd.read_csv('Train.csv',
-                            low_memory=False)  # low_memory=false because got error because some columns have more than one type (str, num) as values
-# get data properties:
-get_df_properties(df_train_data)
-
-# df_valid_data=pd.read_csv('Valid.csv', low_memory=False)
-# get_df_properties(df_valid_data)
-
-'''Feature engineering'''
-# df = set_cat_as_code(df)
-# df=keep_numeric(df)
-# df = drop_columns(df, ['depth', 'table'])
-
-# Ideas for engineering
-# look how many unique values in each column to know whch is more granular, trial and error...
-#  להקטין גרנולריות של שדה שמשמש את העץ יותר מידי בהחחלטות
-# df.table.nunique(), df.depth.nunique(),
-# pd.qcut(df.table, q=100, duplicates='drop')
-
-# pd_train_data=category_cat_code(pd_train_csv) function
-# pd_valid_data=category_cat_code(pd_valid_csv) function
-
-# rf = RandomForestRegressor(n_jobs=-1, max_samples=0.5)
-# run_rf(df_train_data, 'price', 1 ,0.3, 42) #cat_ind =1 then call function to handle objects ad categories and codes
-
-"""run random forest regression"""
-rf = RandomForestRegressor(n_jobs=-1, n_estimators=100, max_samples=0.5, min_samples_leaf=10)
-run_rf(df_train_data, 'SalePrice', 1, 0.3,
-       42)  # cat_ind =1 then call function to handle objects ad categories and codes
-
-"""run random forest regression for different number of trees"""
-# for n in [1,5,10, 100, 200, 500]:
-#     print(f"n= {n} :")
-#     rf = RandomForestRegressor(n_jobs=-1, n_estimators=n,max_samples=0.5, min_samples_leaf=10)
-#     run_rf(df, 'price', 0 ,0.3, 42) #cat_ind =1 then call function to handle objects ad categories and codes
-
-'''validate model'''
-
-#NOTE: Data Cleaning & Feature Engineering – Natalie’s part
 
 def prepare_data(df_train_data: pd.DataFrame) -> pd.DataFrame:
     #Data Cleaning / Handling Missing Values
@@ -372,3 +332,271 @@ def prepare_data(df_train_data: pd.DataFrame) -> pd.DataFrame:
     df_train_data["MachineAge"] = df_train_data["SaleYear"] - df_train_data["YearMade"]
 
     return df_train_data
+
+
+# split the data into train and test
+def split_data(df: pd.DataFrame, y_name: str, cat_ind: int, t_size: float, rand_state: int) -> Tuple[
+    pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    X = df.drop(columns=[y_name])
+    y = df[y_name]
+
+    # Feature Engineering: call category_cat_code(X) function to take care of object and category variables
+    if cat_ind > 0:
+        X = category_cat_code(X)
+        print('print X.head() after object-category cat code')
+        print(X.head())
+    # split to train and test data sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=t_size, random_state=rand_state)
+    return X_train, X_test, y_train, y_test
+
+
+# permutation importance function
+def perm_importance_df(rf, xs, perm_n_repeat: int) -> pd.DataFrame:
+    X_train, X_test, y_train, y_test = xs
+    # Compute Permutation Importance
+    perm_importance = permutation_importance(rf, X_test, y_test, n_repeats=perm_n_repeat, random_state=42, n_jobs=-1)
+    # Display the results
+    print('Feature Importance Results on Test Model Data:')
+    importance_df = pd.DataFrame({
+        "Feature": rf.feature_names_in_,
+        "Permutation Importance": perm_importance.importances_mean,
+        "Permutation Std Deviation": perm_importance.importances_std,
+        'model importance': rf.feature_importances_
+    }).sort_values(by="Permutation Importance", ascending=False)
+    display(importance_df)
+    return importance_df
+
+
+def iso_forest(df_: pd.DataFrame,X_train_: pd.DataFrame, X_test_: pd.DataFrame, contam: float) -> pd.DataFrame:
+    iso_forest_ = IsolationForest(n_estimators=100, contamination=contam ,random_state=42)
+    iso_forest_.fit(X_train_)
+    X_test_copy = X_test_.copy()
+
+    df_['anomaly_score'] = iso_forest.decision_function(X_test_copy)  # Quantitative weirdness
+    df_['anomaly'] = iso_forest.predict(X_test_copy)  # Binary anomaly label
+    df_['anomaly_label'] = df_['anomaly'].map({1: 'Normal', -1: 'Anomaly'})
+
+    return df_
+
+def pipe_lines():
+    # ----------------------------
+    # 1. Load dataset
+    # ----------------------------
+    diamonds = sns.load_dataset("diamonds")
+
+    # Features & Target
+    X = diamonds.drop(columns=["price"])
+    y = diamonds["price"]
+
+    # Train/Test split (no leakage)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+    # ----------------------------
+    # 2. Define categorical & numeric features
+    # ----------------------------
+    cat_features = X.select_dtypes(include=["object","category"]).columns.tolist()
+    num_features = X.select_dtypes(include=["int4","float64"]).columns.tolist()
+
+    # ----------------------------
+    # 3. Preprocessor (Target Encoding for cats, passthrough for nums)
+    # ----------------------------
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("cat",
+             TargetEncoder(
+                 # cols=cat_features
+                 smoothing=20,
+                 handle_missing="value",
+                 handle_unknown="value"
+             ),
+            cat_features),
+            ("num", "passthrough", num_features)
+        ]
+    )
+
+    # ----------------------------
+    # 4. Pipeline with RandomForest
+    # ----------------------------
+    pipe = Pipeline([
+        ("preprocess", preprocessor),
+        ("model", RandomForestRegressor(n_estimators=200, random_state=42))
+    ])
+
+    # Fit
+    pipe.fit(X_train, y_train)
+
+    # ----------------------------
+    # 5. Predictions & RMSE
+    # ----------------------------
+    y_pred = pipe.predict(X_test)
+    rmse = mean_squared_error(y_test, y_pred, squared=False)
+    print(f"RMSE: {rmse:,.2f}")
+
+    #predictions vs actual: Checks bias & heteroscedasticity (if errors increase with price).
+    plt.figure(figsize=(7, 5))
+    plt.scatter(y_test, y_pred, alpha=0.3)
+    plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], "r--")
+    plt.xlabel("Actual Price")
+    plt.ylabel("Predicted Price")
+    plt.title("Predicted vs Actual Diamond Prices")
+    plt.show()
+
+    #residual plot
+    residuals = y_test - y_pred
+    plt.figure(figsize=(7, 5))
+    plt.scatter(y_pred, residuals, alpha=0.3)
+    plt.axhline(0, color="red", linestyle="--")
+    plt.xlabel("Predicted Price")
+    plt.ylabel("Residuals (Actual - Predicted)")
+    plt.title("Residuals vs Predicted")
+    plt.show()
+
+    #feature importance
+    # Extract feature names after preprocessing
+    feature_names = (
+            pipe.named_steps["preprocess"]
+            .transformers_[0][1].get_feature_names_out(cat_features).tolist()
+            + num_features
+    )
+
+    importances = pipe.named_steps["model"].feature_importances_
+
+    feat_imp = pd.DataFrame({"Feature": feature_names, "Importance": importances})
+    feat_imp = feat_imp.sort_values("Importance", ascending=False)
+
+    plt.figure(figsize=(8, 5))
+    plt.barh(feat_imp["Feature"], feat_imp["Importance"])
+    plt.xlabel("Importance")
+    plt.title("Random Forest Feature Importance")
+    plt.gca().invert_yaxis()
+    plt.show()
+
+    #distribution of errors
+    plt.figure(figsize=(7, 5))
+    plt.hist(residuals, bins=50, color="purple", alpha=0.7)
+    plt.xlabel("Residuals")
+    plt.ylabel("Frequency")
+    plt.title("Distribution of Prediction Errors")
+    plt.show()
+
+
+# def run_rf(df: pd.DataFrame, y_name: str, rfr_m_samp: float, rfr_msl:int ,t_size: float, rand_state: int)-> None:
+#    model = RandomForestRegressor(max_samples=rfr_m_samp, min_samples_leaf=rfr_msl)
+def run_rf(df: pd.DataFrame, spl_y_name: str, cat_ind: int, spl_t_size: float,
+           spl_rand_state: int) -> None:  # Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    # cat codes and object to category
+    # split data
+    X_train, X_test, y_train, y_test = split_data(df, spl_y_name, cat_ind, spl_t_size, spl_rand_state)
+    # train model
+    rf.fit(X_train, y_train)
+    y_train_pred = rf.predict(X_train)
+    # test model
+    y_test_pred = rf.predict(X_test)
+    # print rmse results
+    print(f" RMSE Train: {rmse(y_train, y_train_pred)}")
+    print(f" RMSE Test: {rmse(y_test, y_test_pred)}")
+    # Feature Importance
+    # perm_importance_df(rf, (X_train, X_test, y_train, y_test))
+    perm_importance_df(rf, (X_train, X_test, y_train, y_test), 5)
+    # return X_train, X_test, y_train, y_test
+
+
+# set category columns as codes
+def set_cat_as_code(df: pd.DataFrame) -> pd.DataFrame:
+    for col in df.select_dtypes('category').columns:
+        df[col] = df[col].cat.codes
+    return df
+
+
+def get_df_properties(df: pd.DataFrame) -> None:
+    print('---------- head(5) ----------')
+    print(df.head(5))
+    print('---------- info() ----------')
+    print(df.info())
+    print('---------- describe() ----------')
+    print(df.describe())
+    print('---------- shape ----------')
+    print(df.shape)
+    print('---------- nunique() ----------')
+    print(df.nunique())
+    print('---------- df.isna().sum() ----------')
+    print(df.isna().sum())
+
+
+# load data:
+df_train_data = pd.read_csv('Train.csv',
+                            low_memory=False)  # low_memory=false because got error because some columns have more than one type (str, num) as values
+# get data properties:
+get_df_properties(df_train_data)
+
+# df_valid_data=pd.read_csv('Valid.csv', low_memory=False)
+# get_df_properties(df_valid_data)
+
+'''Feature engineering - Prepare Data'''
+# df = set_cat_as_code(df)
+# df=keep_numeric(df)
+# df = drop_columns(df, ['depth', 'table'])
+
+# Ideas for engineering
+# look how many unique values in each column to know whch is more granular, trial and error...
+#  להקטין גרנולריות של שדה שמשמש את העץ יותר מידי בהחחלטות
+# df.table.nunique(), df.depth.nunique(),
+# pd.qcut(df.table, q=100, duplicates='drop')
+
+# pd_train_data=category_cat_code(pd_train_csv) function
+# pd_valid_data=category_cat_code(pd_valid_csv) function
+
+# rf = RandomForestRegressor(n_jobs=-1, max_samples=0.5)
+# run_rf(df_train_data, 'price', 1 ,0.3, 42) #cat_ind =1 then call function to handle objects ad categories and codes
+
+# Natalie's Prepare Function
+df_train_data=prepare_data(df_train_data)
+
+# Iso Forest - prediction of anomaly score (outliers i.e.)
+# Plot carat vs. price with hue as anomaly score (quantitative weirdness)
+X_train, X_test, y_train, y_test = split_data(df_train_data, 'SalePrice', 1, 0.3,42)
+df = iso_forest(df_train_data, X_train , X_test, 0.01)
+
+plt.figure(figsize=(12, 8))
+scatter = plt.scatter(
+    df['carat'], df['price'], c=df['anomaly_score'], cmap='coolwarm',
+    # edgecolor='k',
+    alpha=0.8
+)
+
+plt.colorbar(scatter, label='Anomaly Score (Weirdness)')
+plt.title('Carat vs. Price with Anomaly Score as Hue')
+plt.suptitle('Anomaly Score: lower is more anomalous')
+plt.xlabel('Carat')
+plt.ylabel('Price')
+plt.grid(True)
+plt.show()
+
+
+sns.displot(data=df, x='anomaly_score', kde=True)
+df.sort_values("anomaly_score").sample(20)
+
+df.sort_values("anomaly_score").head()
+import seaborn as sns
+
+sns.displot(data=df[df.anomaly == -1].carat)
+
+print((df.carat>3).mean()) # percentage of diamonds with carat > 3
+
+"""run random forest regression"""
+rf = RandomForestRegressor(n_jobs=-1, n_estimators=100, max_samples=0.5, min_samples_leaf=10)
+run_rf(df_train_data, 'SalePrice', 1, 0.3,
+       42)  # cat_ind =1 then call function to handle objects ad categories and codes
+
+"""run random forest regression for different number of trees"""
+# for n in [1,5,10, 100, 200, 500]:
+#     print(f"n= {n} :")
+#     rf = RandomForestRegressor(n_jobs=-1, n_estimators=n,max_samples=0.5, min_samples_leaf=10)
+#     run_rf(df, 'price', 0 ,0.3, 42) #cat_ind =1 then call function to handle objects ad categories and codes
+
+'''validate model'''
+
+#NOTE: Data Cleaning & Feature Engineering – Natalie’s part
+
